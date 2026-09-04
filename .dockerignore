@@ -1,0 +1,25 @@
+# Version control
+.git/
+.gitignore
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Local files & mounts
+local-files/
+backups/
+*.sql
+*.dump
+*.log
+
+# Documentation & metadata
+README.md
+LICENSE
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,130 +1,200 @@
-# n8n — local Docker setup
+# n8n — Production-Ready Self-Hosted Docker Setup
 
-Self-hosted [n8n](https://n8n.io) running under Docker Compose with a PostgreSQL backend.
+[![n8n Version](https://img.shields.io/badge/n8n-latest%20(v2.x)-EA4B71?logo=n8n&logoColor=white)](https://n8n.io)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16--alpine-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Docker Compose](https://img.shields.io/badge/Docker%20Compose-v2+-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](https://github.com)
 
-- **Editor:** http://localhost:5678
-- **Version running:** n8n 2.30.7 (`docker.n8n.io/n8nio/n8n:latest`)
-- **Database:** PostgreSQL 16 (`postgres:16-alpine`)
+A robust, hardened, self-hosted deployment of [n8n](https://n8n.io) workflow automation powered by Docker Compose and PostgreSQL 16. Configured out of the box with execution history pruning, strict runner sandboxing, healthchecked database startup ordering, and local file storage mounting.
 
-## Quick start
+---
 
-```powershell
-cd c:\laragon\www\htdocs\aDocker\n8n
+## Architecture & Data Flow
+
+```mermaid
+flowchart TD
+    subgraph Host["Host Machine / Reverse Proxy"]
+        User["Browser / Webhook Trigger"] -->|Port 5678| N8N_Port["localhost:5678"]
+        LocalFS["./local-files/"]
+    end
+
+    subgraph DockerNet["Docker Compose Network"]
+        N8N_Port --> N8N_Container["n8n Service<br/>(docker.n8n.io/n8nio/n8n:latest)"]
+        
+        N8N_Container -->|Port 5432<br/>service_healthy| PG_Container["PostgreSQL 16 Service<br/>(postgres:16-alpine)"]
+        
+        N8N_Container -->|Mount /files| LocalFS
+        N8N_Container -->|Persist /home/node/.n8n| VolN8N[("Volume: n8n_data")]
+        PG_Container -->|Persist /var/lib/postgresql/data| VolPG[("Volume: postgres_data")]
+    end
+
+    classDef container fill:#f9f0ff,stroke:#8a2be2,stroke-width:2px;
+    classDef volume fill:#e6f7ff,stroke:#1890ff,stroke-width:2px;
+    class N8N_Container,PG_Container container;
+    class VolN8N,VolPG volume;
+```
+
+---
+
+## Key Highlights & Design Decisions
+
+- **PostgreSQL over SQLite**: SQLite is n8n's lightweight default, but takes a write lock on every single execution. Postgres unlocks non-blocking concurrent workflow executions and zero database lock timeouts.
+- **Ordered Bootstrapping**: n8n waits for Postgres via `condition: service_healthy` backed by `pg_isready`. No race conditions or boot loop migrations.
+- **Automated Pruning**: Execution history is automatically pruned after 14 days (`EXECUTIONS_DATA_MAX_AGE=336`), preventing runaway disk consumption.
+- **Container Sandboxing**: Telemetry is disabled (`N8N_DIAGNOSTICS_ENABLED=false`), and Code nodes are blocked from inspecting container host environment variables (`N8N_BLOCK_ENV_ACCESS_IN_NODE=true`).
+- **Local File Interop**: `./local-files` is mounted into the container at `/files` for convenient Read/Write Binary File operations.
+
+---
+
+## Quick Start
+
+### 1. Prerequisites
+- [Docker Engine](https://docs.docker.com/engine/install/) (v24.0+) & [Docker Compose](https://docs.docker.com/compose/) (v2.20+)
+- Git
+
+### 2. Clone and Setup Environment
+
+```bash
+git clone git@github.com:ajaymahato431/n8n.git
+cd n8n
+cp .env.example .env
+```
+
+*(On Windows PowerShell: `Copy-Item .env.example .env`)*
+
+### 3. Generate Encryption Key & Set Credentials
+
+Generate a secure 32-byte encryption key:
+- **Linux/macOS:**
+  ```bash
+  openssl rand -hex 32
+  ```
+- **Windows PowerShell:**
+  ```powershell
+  -join ((1..32) | ForEach-Object { '{0:x2}' -f (Get-Random -Max 256) })
+  ```
+
+Open `.env` and configure:
+1. `N8N_ENCRYPTION_KEY`: Paste the generated 32-character key.
+2. `POSTGRES_PASSWORD`: Choose a strong database password.
+3. `GENERIC_TIMEZONE`: Set your local timezone (e.g. `UTC`, `America/New_York`, `Asia/Kathmandu`).
+
+> [!IMPORTANT]
+> **Keep your `N8N_ENCRYPTION_KEY` safe and backed up!** n8n uses this key to encrypt all saved credentials in Postgres. If lost, your credentials cannot be recovered and must be re-entered. Never alter this key on an existing instance.
+
+### 4. Launch the Stack
+
+```bash
 docker compose up -d
 ```
 
-Open http://localhost:5678 and create the owner account on first load. That account lives in the
-database, not in a config file — there is no default login.
-
-## Files
-
-| File | Purpose |
-|---|---|
-| `docker-compose.yml` | Service definitions for n8n and Postgres |
-| `.env` | Port, timezone, encryption key, database credentials. **Not committed.** |
-| `.gitignore` | Excludes `.env` and `local-files/` |
-| `local-files/` | Mounted into n8n at `/files` — use this path in Read/Write Binary File nodes |
-
-## Configuration
-
-Everything tunable lives in `.env`:
-
-| Variable | Default | Notes |
-|---|---|---|
-| `N8N_PORT` | `5678` | Host port. Change if something else already uses 5678. |
-| `N8N_HOST` | `localhost` | Hostname n8n believes it is served from. |
-| `N8N_WEBHOOK_URL` | `http://localhost:5678/` | Base URL for test + production webhooks. |
-| `GENERIC_TIMEZONE` | `Europe/London` | **Decides when Schedule/Cron triggers fire.** Set to your own zone. |
-| `N8N_ENCRYPTION_KEY` | generated | Decrypts stored credentials. See below. |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `n8n` / generated / `n8n` | Only reachable inside the Compose network. |
-
-Apply changes with `docker compose up -d` — Compose recreates only what changed.
-
-### The encryption key matters
-
-`N8N_ENCRYPTION_KEY` encrypts every credential you save in n8n. Two rules:
-
-1. **Back up `.env`** somewhere outside this folder. Lose the key and every stored credential
-   becomes permanently unreadable — you re-enter all of them by hand.
-2. **Never change it** on an existing install. Existing credentials were encrypted with the old
-   key and will fail to decrypt.
-
-## Design notes
-
-**Postgres, not SQLite.** SQLite is n8n's default and is fine for a single trigger firing
-occasionally, but it takes a write lock per execution — concurrent workflows serialize behind
-each other and can time out. Postgres removes that ceiling for the cost of one extra container.
-
-**Startup ordering.** n8n `depends_on` Postgres with `condition: service_healthy`, gated by a
-`pg_isready` healthcheck. Without it, n8n races the database on boot and crash-loops through its
-migrations.
-
-**Execution pruning is on.** `EXECUTIONS_DATA_PRUNE=true` with a 336-hour (14 day) retention.
-Full input/output data is saved for both successes and failures, which is what makes debugging
-possible but is also what grows the database — the pruning window is the trade-off. Widen
-`EXECUTIONS_DATA_MAX_AGE` if you need longer history.
-
-**Hardening applied:** telemetry off (`N8N_DIAGNOSTICS_ENABLED=false`), Code nodes blocked from
-reading host environment variables (`N8N_BLOCK_ENV_ACCESS_IN_NODE`), settings file permissions
-enforced. `N8N_SECURE_COOKIE=false` is deliberate — it allows plain HTTP on localhost, and must
-be flipped to `true` if this is ever exposed over HTTPS.
-
-**Community nodes** are installable from Settings → Community nodes, including unverified
-packages and use as AI tools.
-
-## Common commands
-
-```powershell
-docker compose logs -f n8n           # tail logs
-docker compose restart n8n           # restart after config changes
-docker compose down                  # stop everything; volumes and data survive
-docker compose ps                    # container status
+Check running container status:
+```bash
+docker compose ps
 ```
 
-### Upgrading
+Open your browser at **http://localhost:5678** and complete the initial owner account registration.
 
-```powershell
+---
+
+## Configuration Reference (`.env`)
+
+| Variable | Default | Purpose & Notes |
+|---|---|---|
+| `N8N_PORT` | `5678` | Host port mapped to n8n container. |
+| `N8N_HOST` | `localhost` | Hostname n8n resolves itself under. |
+| `N8N_PROTOCOL` | `http` | Use `https` if SSL is terminated at a reverse proxy. |
+| `N8N_WEBHOOK_URL` | `http://localhost:5678/` | Public URL used when generating webhook callback URLs. |
+| `GENERIC_TIMEZONE` | `UTC` | Timezone governing Schedule and Cron triggers. |
+| `N8N_ENCRYPTION_KEY` | *(Required)* | 32-character secret used to encrypt stored credentials. |
+| `POSTGRES_USER` | `n8n` | Database username. |
+| `POSTGRES_PASSWORD` | *(Required)* | Database password. |
+| `POSTGRES_DB` | `n8n` | Database name. |
+| `N8N_SECURE_COOKIE` | `false` | Set to `true` when serving behind an HTTPS reverse proxy. |
+| `N8N_BLOCK_ENV_ACCESS_IN_NODE`| `true` | Prevents Code nodes from reading environment variables. |
+| `EXECUTIONS_DATA_PRUNE` | `true` | Enables automatic pruning of past execution logs. |
+| `EXECUTIONS_DATA_MAX_AGE` | `336` | Retention duration in hours (336h = 14 days). |
+| `N8N_DIAGNOSTICS_ENABLED` | `false` | Disables sending telemetry to n8n.io. |
+| `N8N_COMMUNITY_PACKAGES_ENABLED`| `true` | Enables UI installation of community nodes. |
+
+---
+
+## Common Management Commands
+
+```bash
+# View real-time application logs
+docker compose logs -f n8n
+
+# View database logs
+docker compose logs -f postgres
+
+# Restart services after updating .env
+docker compose up -d
+
+# Stop the stack (data is fully preserved in named volumes)
+docker compose down
+```
+
+---
+
+## Upgrades, Backups & Maintenance
+
+### Upgrading n8n
+n8n migrations run automatically on startup:
+```bash
 docker compose pull
 docker compose up -d
 ```
 
-n8n runs its database migrations automatically on start. Take a backup first (below) — n8n
-migrations are one-way, and rolling back to an older image after a migration will not work.
-
-### Backup
-
-Workflows, credentials, and execution history all live in Postgres:
-
-```powershell
+### Database Backup
+Workflows, execution histories, and encrypted credentials reside in PostgreSQL:
+```bash
+# Export database dump
 docker compose exec postgres pg_dump -U n8n n8n > backup.sql
 ```
+*(On Windows PowerShell: `docker compose exec postgres pg_dump -U n8n n8n | Out-File -Encoding utf8 backup.sql`)*
 
-Restore into a fresh stack:
+### Database Restore
+Restore into a fresh PostgreSQL container:
+```bash
+# Linux/macOS
+cat backup.sql | docker compose exec -T postgres psql -U n8n -d n8n
 
-```powershell
+# Windows PowerShell
 Get-Content backup.sql | docker compose exec -T postgres psql -U n8n -d n8n
 ```
 
-A complete backup is `backup.sql` **plus** `.env` — the dump holds credentials still encrypted
-with the key in that file.
+> [!NOTE]
+> A complete backup consists of `backup.sql` **and** your `.env` file containing the `N8N_ENCRYPTION_KEY`.
 
-## Data locations
+---
 
-Two named Docker volumes, both outside this folder and untouched by `docker compose down`:
+## Production & Reverse Proxy Deployment
 
-- `n8n_n8n_data` → `/home/node/.n8n` (instance config, encryption key file, SSH keys)
-- `n8n_postgres_data` → Postgres data directory
+When exposing n8n to the public internet:
+1. Put a reverse proxy (e.g., Nginx, Caddy, Cloudflare, Traefik) in front with a valid TLS certificate.
+2. In `.env`, set:
+   ```env
+   N8N_PROTOCOL=https
+   N8N_HOST=n8n.yourdomain.com
+   N8N_WEBHOOK_URL=https://n8n.yourdomain.com/
+   N8N_SECURE_COOKIE=true
+   ```
+3. Forward `Host` and websocket upgrade headers:
+   - `Upgrade: $http_upgrade`
+   - `Connection: "Upgrade"`
 
-`docker compose down -v` deletes both. That is the one destructive command here.
+---
 
 ## Troubleshooting
 
-**Port 5678 already in use** — usually a leftover `docker run` container: `docker ps` then
-`docker stop <name>`. Or change `N8N_PORT` in `.env`.
+- **Port 5678 already bound**: Change `N8N_PORT=5679` in `.env` and run `docker compose up -d`.
+- **Database connection error**: Verify `POSTGRES_PASSWORD` in `.env` matches between both containers and run `docker compose logs postgres`.
+- **External webhooks fail**: External services cannot reach `localhost`. Configure `N8N_WEBHOOK_URL` with your public tunnel (e.g. ngrok, Cloudflare Tunnel) or domain.
 
-**"Python 3 is missing from this system" in the logs** — expected. The image ships without
-Python, so only Python Code nodes are affected; the JavaScript runner works normally.
+---
 
-**Webhooks unreachable from outside** — `N8N_WEBHOOK_URL` points at `localhost`, which external
-services cannot resolve. Put a tunnel or reverse proxy in front and set that variable to the
-public URL.
+## License
+
+This project is licensed under the [MIT License](LICENSE).

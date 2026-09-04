@@ -1,2 +1,29 @@
+# Environment configuration
 .env
+.env.*
+!.env.example
+
+# Local storage and mounted volumes
 local-files/
+*.log
+
+# Database dumps & backups
+*.sql
+*.sql.gz
+*.dump
+*.bak
+backups/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+*.swo
+*~
